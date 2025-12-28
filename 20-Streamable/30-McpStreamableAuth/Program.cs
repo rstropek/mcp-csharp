@@ -5,63 +5,111 @@ using WinterPasswordLib;
 using System.Text.Json;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
-using static ModelContextProtocol.Protocol.ElicitRequestParams;
 using System.Diagnostics;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using ModelContextProtocol.AspNetCore.Authentication;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add CORS services
-builder.Services.AddCors(options =>
-{
-    options.AddDefaultPolicy(policy => policy
-        .AllowAnyOrigin()
-        .AllowAnyMethod()
-        .AllowAnyHeader()
-        .WithExposedHeaders("Mcp-Session-Id"));
-});
+builder.AddServiceDefaults();
 
-// Add MCP server services
+builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
+    .AllowAnyOrigin()
+    .WithMethods("GET", "POST", "OPTIONS")
+    .WithHeaders("Content-Type", "Authorization", "Mcp-Session-Id", "Mcp-Protocol-Version")
+    .WithExposedHeaders("Mcp-Session-Id", "Www-Authenticate")));
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = McpAuthenticationDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    // Use the Issuer URL (base URL) as Authority for OIDC discovery
+    options.Authority = builder.Configuration["Scalekit:Issuer"] ?? throw new InvalidOperationException("Scalekit Issuer is not configured");
+
+    // For local development, you might need this if using HTTP
+    options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
+
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidIssuer = builder.Configuration["Scalekit:Issuer"],
+        ValidAudience = builder.Configuration["Scalekit:Audience"] ?? throw new InvalidOperationException("Scalekit Audience is not configured"),
+        ValidateIssuerSigningKey = true,
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+    };
+
+    options.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = context =>
+        {
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            var name = context.Principal?.Claims.FirstOrDefault(c => c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value ?? "unknown";
+            logger.LogInformation("Token validated for: {Name}", name);
+            return Task.CompletedTask;
+        },
+        OnAuthenticationFailed = context =>
+        {
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            logger.LogWarning(context.Exception, "Authentication failed: {Message}", context.Exception.Message);
+            return Task.CompletedTask;
+        },
+        OnChallenge = context =>
+        {
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            // context.Response.Headers.Append(
+            //     "WWW-Authenticate",
+            //     $"Bearer realm=\"OAuth\", resource_metadata=\"{builder.Configuration["Scalekit:OAuthProtectedResource"]!}\"");
+            // context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            logger.LogInformation("Challenging client to authenticate");
+            // context.HandleResponse();
+            return Task.CompletedTask;
+        }
+    };
+}).AddMcp(options =>
+{
+    options.ResourceMetadata = new()
+    {
+        AuthorizationServers = { new Uri(builder.Configuration["Scalekit:EnvironmentUrl"]!) },
+        ScopesSupported = ["ponypwd:generate"],
+    };
+});;
+
+builder.Services.AddAuthorization();
+
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddMcpServer()
     .WithHttpTransport()
     .WithToolsFromAssembly()
     .WithPromptsFromAssembly()
     .WithResourcesFromAssembly();
 
-builder.AddServiceDefaults();
-
 var app = builder.Build();
 
-// Use CORS
 app.UseCors();
 
-// Health check endpoint
-app.MapGet("/health", () => Results.Json(new
-{
-    status = "healthy",
-    timestamp = DateTime.UtcNow.ToString("O"),
-    serverName = "winter-password-streamable",
-    serverVersion = "0.1.0"
-}));
+app.UseAuthentication();
+app.UseAuthorization();
 
-// Map MCP endpoints
-app.MapMcp();
+app.MapMcp().RequireAuthorization();
 
 app.Run();
 
 [McpServerToolType]
 public static class WinterPasswordTools
 {
-    // .NET Activity Source is called "Tracer" in OpenTelemetry.
-    // Consider using https://opentelemetry.io/docs/languages/net/shim/
-    // to harmonize the naming of the components.
-    private static readonly ActivitySource source = new("McpStreamableServer");
+    private static readonly ActivitySource source = new("McpStreamableAuthServer");
 
     [McpServerTool, Description("Builds a password from winter words.")]
     public static string WinterPassword(
         [Description("Minimum length of the password")] int minLength = 16,
         [Description("Enable special character replacement")] bool special = false)
     {
-        using var activity = source.StartActivity("Generating password");
+        using var activity = source.StartActivity("WinterPassword");
         activity?.SetTag("minLength", minLength);
         activity?.SetTag("special", special);
         
@@ -76,7 +124,7 @@ public static class WinterPasswordTools
         [Description("Minimum length of the password")] int minLength = 16,
         [Description("Enable special character replacement")] bool special = false)
     {
-        using var activity = source.StartActivity("Generating batch of passwords");
+        using var activity = source.StartActivity("WinterPasswordBatch");
         activity?.SetTag("count", count);
         activity?.SetTag("minLength", minLength);
         activity?.SetTag("special", special);
@@ -102,11 +150,11 @@ public static class WinterPasswordTools
             }
 
             // Ask the user if they want to use custom words
-            var useCustomSchema = new RequestSchema
+            var useCustomSchema = new ElicitRequestParams.RequestSchema
             {
                 Properties =
             {
-                ["UseCustomWords"] = new BooleanSchema
+                ["UseCustomWords"] = new ElicitRequestParams.BooleanSchema
                 {
                     Title = "Use Custom Words",
                     Description = "Do you want to provide your own winter words instead of using the built-in ones?"
@@ -124,11 +172,11 @@ public static class WinterPasswordTools
             // If user wants to provide custom words
             if (useCustomResponse.Action == "accept" && useCustomResponse.Content?["UseCustomWords"].ValueKind == JsonValueKind.True)
             {
-                var wordsSchema = new RequestSchema
+                var wordsSchema = new ElicitRequestParams.RequestSchema
                 {
                     Properties =
                 {
-                    ["CustomWords"] = new StringSchema
+                    ["CustomWords"] = new ElicitRequestParams.StringSchema
                     {
                         Title = "Custom Words",
                         Description = "List your custom winter words, separated by commas (e.g., Snowflake, Icicle, Frost, Winter)",
@@ -195,3 +243,4 @@ public static class WinterWordResources
     [McpServerResource(Name = "winter-characters-text"), Description("Winter words (text) - One word per line from data/winter-words.txt")]
     public static string WinterCharactersText() => JsonSerializer.Serialize(PasswordGenerator.DefaultWords);
 }
+
