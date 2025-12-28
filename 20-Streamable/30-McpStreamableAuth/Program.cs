@@ -61,12 +61,7 @@ builder.Services.AddAuthentication(options =>
         OnChallenge = context =>
         {
             var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
-            // context.Response.Headers.Append(
-            //     "WWW-Authenticate",
-            //     $"Bearer realm=\"OAuth\", resource_metadata=\"{builder.Configuration["Scalekit:OAuthProtectedResource"]!}\"");
-            // context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             logger.LogInformation("Challenging client to authenticate");
-            // context.HandleResponse();
             return Task.CompletedTask;
         }
     };
