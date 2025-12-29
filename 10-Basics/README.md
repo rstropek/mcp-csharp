@@ -13,6 +13,14 @@ npx @modelcontextprotocol/inspector
 
 Alternatively, you can use any other MCP client (e.g. VSCode, Cursor, Claude Desktop, etc.). VSCode is recommended as it has one of the most complete MCP client implementations.
 
+## Docs
+
+* [Model Context Protocol (MCP)](https://modelcontextprotocol.io)
+* [VSCode MCP Developer Guide](https://code.visualstudio.com/api/extension-guides/ai/mcp)
+  * Compare to [Claude Desktop Remote MCP Server Guide](https://support.claude.com/en/articles/11503834-building-custom-connectors-via-remote-mcp-servers)
+  * Compare to [ChatGPT Developer Mode](https://platform.openai.com/docs/guides/developer-mode) for full MCP client capabilities ([change developer mode](https://chatgpt.com/#settings/Connectors))
+
+
 ## Samples
 
 ### Sample 1: MCP Server Without SDK (`10-McpServerNoSdk`)
